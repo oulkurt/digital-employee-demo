@@ -32,7 +32,7 @@ uv run streamlit run streamlit_app.py
 
 复制 `.env.example` 到 `.env` 并配置：
 
-- `ZHIPUAI_API_KEY` - 智谱 GLM 服务
+- `Chat LLM` - 对话 LLM 配置
 - `SILICONFLOW_API_KEY` - Embedding + Reranker
 - `TAVILY_API_KEY` - 搜索服务
 - `DATABASE_URL` - PostgreSQL 连接串
