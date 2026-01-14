@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class BookingResult(BaseModel):
@@ -25,19 +25,29 @@ class QueryResult(BaseModel):
 
 
 # Simulated room database
-AVAILABLE_ROOMS = ["A301", "A302", "B201", "B202", "C101"]
+AVAILABLE_ROOMS = [
+    "1001中会议室",
+    "1013小会议室",
+    "1015中会议室",
+    "1106会议室",
+    "1113大会议室",
+    "1117小会议室",
+    "601会议室",
+    "602会议室",
+    "603会议室",
+]
 
 # In-memory bookings storage (for demo)
 _bookings: list[dict] = []
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def book_meeting_room(
     day: Literal["monday", "tuesday", "wednesday", "thursday", "friday"] | str,
     time_slot: Literal["morning", "afternoon"] = "afternoon",
     duration_hours: int = 1,
     room: str | None = None,
-) -> BookingResult:
+) -> tuple[str, BookingResult]:
     """
     Book a meeting room.
 
@@ -86,13 +96,18 @@ def book_meeting_room(
     }
     _bookings.append(booking)
 
-    return BookingResult(
+    result = BookingResult(
         success=True,
         room=selected_room,
         date=booking["date"],
         time=start_time,
-        message=f"Successfully booked {selected_room} on {booking['date']} at {start_time} for {duration_hours} hour(s).",
+        message=(
+            f"Successfully booked {selected_room} on {booking['date']} "
+            f"at {start_time} for {duration_hours} hour(s)."
+        ),
     )
+    # Return (content_for_llm, artifact_for_code)
+    return (result.message, result)
 
 
 @tool
@@ -157,6 +172,70 @@ def cancel_meeting_room(
             "success": False,
             "message": f"No booking found for {room} on {date}.",
         }
+
+
+def generate_ical_content(bookings: list[dict] | None = None) -> str:
+    """
+    Generate iCal (RFC 5545) content from bookings.
+
+    Args:
+        bookings: List of booking dicts. If None, uses module-level _bookings.
+
+    Returns:
+        iCal formatted string for all bookings.
+    """
+    source = bookings if bookings is not None else _bookings
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Digital Employee Demo//Meeting Rooms//CN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:会议室预订",
+    ]
+
+    for i, booking in enumerate(source):
+        room = booking.get("room", "Unknown")
+        date_str = booking.get("date", "")
+        time_str = booking.get("time", "09:00")
+        duration = booking.get("duration", 1)
+
+        if not date_str:
+            continue
+
+        # Parse date and time
+        try:
+            start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            end_dt = start_dt + timedelta(hours=duration)
+        except ValueError:
+            continue
+
+        # Format for iCal (YYYYMMDDTHHMMSS)
+        dtstart = start_dt.strftime("%Y%m%dT%H%M%S")
+        dtend = end_dt.strftime("%Y%m%dT%H%M%S")
+        dtstamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
+        uid = f"booking-{i}-{date_str}-{room}@digital-employee-demo"
+
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{dtstamp}",
+            f"DTSTART:{dtstart}",
+            f"DTEND:{dtend}",
+            f"SUMMARY:会议室预订 - {room}",
+            f"LOCATION:{room}",
+            "DESCRIPTION:通过数字员工助手预订的会议室",
+            "STATUS:CONFIRMED",
+            "END:VEVENT",
+        ])
+
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines)
+
+
+def get_all_bookings() -> list[dict]:
+    """Get all current bookings."""
+    return _bookings.copy()
 
 
 # Export all calendar tools

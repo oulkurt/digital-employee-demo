@@ -1,12 +1,15 @@
 """Synchronous wrapper for LangGraph agent with trace collection."""
 
+import queue
+import threading
 from dataclasses import dataclass, field
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.agent.graph import create_agent, retrieve_user_memories
 from src.agent.prompts import build_system_prompt
-from src.memory.extractor import extract_memories_from_message, save_memory
+from src.memory.extractor import save_memory
+from src.memory.llm_extractor import extract_memories_with_fallback
 from src.memory.preset import load_preset_memories
 from src.services.store_sync import connect_store, get_event_loop, run_async
 
@@ -218,53 +221,75 @@ def run_agent_streaming(
                 # Convert Pydantic model to dict for serialization
                 if hasattr(tool_output, "model_dump"):
                     tool_output = tool_output.model_dump()
+                # Handle ToolMessage wrapper (LangGraph v2 format)
+                elif hasattr(tool_output, "content"):
+                    # ToolMessage contains content as string repr of Pydantic model
+                    # Try to get the actual artifact if available
+                    if hasattr(tool_output, "artifact") and tool_output.artifact:
+                        if hasattr(tool_output.artifact, "model_dump"):
+                            tool_output = tool_output.artifact.model_dump()
+                        else:
+                            tool_output = tool_output.artifact
                 yield ("tool_end", {"name": current_tool, "output": tool_output})
 
-        # Extract and save memories from user message
-        extracted = extract_memories_from_message(message)
-        for mem in extracted:
-            await save_memory(store, user_id, mem)
-            yield ("memory_saved", {"content": mem.content, "type": mem.type})
-
+        # Yield done first so user sees complete response
         yield ("done", full_response)
 
-    # Use threading + queue for true streaming
-    import queue
-    import threading
+        # Extract and save memories using LLM (after response delivery)
+        yield ("memory_extracting", {})
+        try:
+            extracted = await extract_memories_with_fallback(
+                user_message=message,
+                store=store,
+                user_id=user_id,
+                timeout=10.0,
+                deduplicate=True,
+            )
+            for mem in extracted:
+                await save_memory(store, user_id, mem)
+                yield ("memory_saved", {"content": mem.content, "type": mem.type})
+        except Exception as e:
+            yield ("memory_extraction_failed", {"reason": str(e)})
 
-    event_queue: queue.Queue = queue.Queue()
-    error_holder: list = []
+    # Use thread + queue for true streaming
+    # Events are put into queue immediately as they're produced
+    event_queue = queue.Queue()
+    _SENTINEL = object()  # Marks end of stream
+
+    main_loop = get_event_loop()
 
     def run_async_stream():
-        """Run the async stream in a separate thread."""
-        loop = get_event_loop()
-
-        async def collect_and_queue():
+        """Run async stream in thread, pushing events to queue."""
+        async def stream_to_queue():
             try:
                 async for event in _stream():
                     event_queue.put(event)
             except Exception as e:
-                error_holder.append(str(e))
+                event_queue.put(("error", str(e)))
             finally:
-                event_queue.put(None)  # Sentinel to signal completion
+                event_queue.put(_SENTINEL)
 
-        loop.run_until_complete(collect_and_queue())
+        # Wrap run_until_complete to catch event loop errors
+        try:
+            main_loop.run_until_complete(stream_to_queue())
+        except Exception as e:
+            # Ensure error and sentinel are queued even if run_until_complete fails
+            import traceback
+            traceback.print_exc()
+            event_queue.put(("error", f"Event loop error: {e}"))
+            event_queue.put(_SENTINEL)
 
-    # Start the stream in a background thread
+    # Start streaming in background thread
     stream_thread = threading.Thread(target=run_async_stream, daemon=True)
     stream_thread.start()
 
-    # Yield events as they arrive
+    # Yield events as they arrive from the queue
     while True:
         try:
-            event = event_queue.get(timeout=60)
-            if event is None:
+            event = event_queue.get(timeout=60.0)  # 60s timeout per event
+            if event is _SENTINEL:
                 break
             yield event
         except queue.Empty:
-            yield ("error", "Timeout waiting for response")
+            yield ("error", "Stream timeout")
             break
-
-    # Check for errors
-    if error_holder:
-        yield ("error", error_holder[0])

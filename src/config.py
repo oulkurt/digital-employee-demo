@@ -15,9 +15,11 @@ class Settings(BaseSettings):
     )
 
     # Chat LLM
-    openrouter_api_key: str = "a948c007713c44eabbb2fcaec42e60be.V0rm1tJVTebSI9ws"
-    openrouter_base_url: str = "https://api.z.ai/api/coding/paas/v4"
-    default_model: str = "glm-4.7"
+    # openrouter_api_key: str = "a948c007713c44eabbb2fcaec42e60be.V0rm1tJVTebSI9ws"
+    openrouter_api_key: str = "ms-337f22b1-ecd1-48ec-94ea-04ccde03d486"
+    # openrouter_base_url: str = "https://api.z.ai/api/coding/paas/v4"
+    openrouter_base_url: str = "https://api-inference.modelscope.cn/v1"
+    default_model: str = "ZhipuAI/GLM-4.7"
 
     # Embedding & Reranker
     siliconflow_api_key: str = "sk-dzawcmfodnzatlywnqxihrqhtzmakicwvrmfbdaqslnrjugj"

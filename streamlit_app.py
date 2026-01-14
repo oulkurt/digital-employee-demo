@@ -15,8 +15,10 @@ import uuid
 
 import streamlit as st
 
+from src.memory.extractor import get_learned_memories
 from src.memory.preset import PRESET_MEMORIES
 from src.services.agent_sync import initialize_agent, run_agent_streaming
+from src.services.store_sync import connect_store, run_async
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -54,6 +56,17 @@ def init_session_state():
         st.session_state.thread_id = str(uuid.uuid4())
     if "learned_memories" not in st.session_state:
         st.session_state.learned_memories = []
+        try:
+            store = connect_store()
+            user = st.session_state.get("user_id", "demo_user")
+            st.session_state.learned_memories = run_async(
+                get_learned_memories(store, user_id=user),
+            )
+        except Exception as e:
+            # Log error but keep empty list if store is unavailable
+            import logging
+            logging.warning(f"Failed to load learned memories: {e}")
+            st.session_state.learned_memories = []
     if "retrieved_memories" not in st.session_state:
         st.session_state.retrieved_memories = []
     if "tool_calls" not in st.session_state:
@@ -173,6 +186,17 @@ def render_sidebar():
                 with st.container(border=True):
                     st.markdown(f"**{room}**")
                     st.caption(f"📆 {date} ⏰ {time}")
+
+            # iCal download button
+            from src.tools.calendar import generate_ical_content
+            ical_content = generate_ical_content(st.session_state.current_bookings)
+            st.download_button(
+                label="📥 导出日历 (.ics)",
+                data=ical_content,
+                file_name="meeting_bookings.ics",
+                mime="text/calendar",
+                use_container_width=True,
+            )
         else:
             st.caption("暂无预订...")
 
@@ -361,6 +385,11 @@ def process_message(prompt: str):
                 elif event_type == "tool_end":
                     tool_output = data.get("output")
                     tool_name = data.get("name", "")
+
+                    # Ensure tool_output is a dict (handle Pydantic models)
+                    if hasattr(tool_output, "model_dump"):
+                        tool_output = tool_output.model_dump()
+
                     if st.session_state.tool_calls:
                         st.session_state.tool_calls[-1]["status"] = "completed"
                         st.session_state.tool_calls[-1]["output"] = tool_output
@@ -376,6 +405,10 @@ def process_message(prompt: str):
                             })
                             st.toast("📅 会议已预订！")
 
+                elif event_type == "memory_extracting":
+                    # Show extraction in progress
+                    st.toast("🧠 正在分析记忆...", icon="⏳")
+
                 elif event_type == "memory_saved":
                     # Add to learned memories and show toast
                     new_memory = {
@@ -383,7 +416,12 @@ def process_message(prompt: str):
                         "type": data.get("type", "preference"),
                     }
                     st.session_state.learned_memories.append(new_memory)
-                    st.toast("✅ 已记住您的偏好")
+                    content_preview = data.get("content", "")[:25]
+                    st.toast(f"🧠 已记住: {content_preview}...")
+
+                elif event_type == "memory_extraction_failed":
+                    # Show extraction failure (non-blocking)
+                    st.toast("⚠️ 记忆分析暂不可用", icon="⚠️")
 
                 elif event_type == "done":
                     full_response = data
