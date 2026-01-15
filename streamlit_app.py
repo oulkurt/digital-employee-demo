@@ -12,9 +12,11 @@
 """
 
 import uuid
+from datetime import datetime, timedelta
 
 import streamlit as st
 
+from src.memory.bookings import get_bookings_sync, save_booking_sync
 from src.memory.extractor import get_learned_memories
 from src.memory.preset import PRESET_MEMORIES
 from src.services.agent_sync import initialize_agent, run_agent_streaming
@@ -45,6 +47,71 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+
+# --- Upcoming Agenda View ---
+def render_upcoming_agenda(bookings: list[dict]):
+    """Render a vertical agenda list grouped by date."""
+    from itertools import groupby
+
+    if not bookings:
+        st.caption("暂无预订")
+        return
+
+    today = datetime.now().date()
+    day_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+    # Filter valid bookings and sort by date/time
+    valid_bookings = []
+    for b in bookings:
+        date_str = b.get("date")
+        if not date_str:
+            continue
+        try:
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        valid_bookings.append({
+            **b,
+            "_date_obj": date_obj,
+            "_sort_key": (date_str, b.get("time", "00:00")),
+        })
+
+    if not valid_bookings:
+        st.caption("暂无有效预订")
+        return
+
+    valid_bookings.sort(key=lambda x: x["_sort_key"])
+
+    # Group by date
+    for date_str, group in groupby(valid_bookings, key=lambda x: x.get("date")):
+        group_list = list(group)
+        date_obj = group_list[0]["_date_obj"]
+        weekday = day_names[date_obj.weekday()]
+
+        # Date header
+        if date_obj == today:
+            header = f"📍 **今天** · {weekday} · {date_obj.strftime('%m/%d')}"
+        elif date_obj == today + timedelta(days=1):
+            header = f"📅 **明天** · {weekday} · {date_obj.strftime('%m/%d')}"
+        else:
+            header = f"📅 {weekday} · {date_obj.strftime('%m/%d')}"
+
+        st.markdown(header)
+
+        # Render each booking as a card
+        for booking in group_list:
+            room = booking.get("room") or "未知会议室"
+            time_str = booking.get("time") or "--:--"
+            st.markdown(
+                f"<div style='background: #f0f2f6; padding: 8px 12px; "
+                f"border-radius: 6px; margin: 4px 0; border-left: 3px solid #1E88E5;'>"
+                f"<span style='font-weight: 600;'>{time_str}</span> · {room}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")  # spacing
 
 
 # --- Session State Initialization ---
@@ -80,9 +147,15 @@ def init_session_state():
     # Session history for conversation list
     if "sessions" not in st.session_state:
         st.session_state.sessions = []  # List of {id, title, timestamp}
-    # Current bookings for display
+    # Current bookings for display - load from database
     if "current_bookings" not in st.session_state:
         st.session_state.current_bookings = []
+        try:
+            user = st.session_state.get("user_id", "demo_user")
+            st.session_state.current_bookings = get_bookings_sync(user)
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to load bookings from db: {e}")
 
 
 # --- Sidebar (Memory Panel) ---
@@ -176,16 +249,20 @@ def render_sidebar():
 
         st.divider()
 
-        # Current bookings section
+        # Current bookings section with week calendar
         st.subheader("📅 我的预订")
+
+        # Week calendar view (always show)
+        render_upcoming_agenda(st.session_state.current_bookings)
+
         if st.session_state.current_bookings:
-            for booking in st.session_state.current_bookings:
-                room = booking.get("room", "N/A")
-                date = booking.get("date", "N/A")
-                time = booking.get("time", "N/A")
-                with st.container(border=True):
-                    st.markdown(f"**{room}**")
-                    st.caption(f"📆 {date} ⏰ {time}")
+            # Expandable list view
+            with st.expander("📋 预订详情", expanded=False):
+                for booking in st.session_state.current_bookings:
+                    room = booking.get("room", "N/A")
+                    date = booking.get("date", "N/A")
+                    time = booking.get("time", "N/A")
+                    st.markdown(f"• **{room}** - {date} {time}")
 
             # iCal download button
             from src.tools.calendar import generate_ical_content
@@ -197,8 +274,12 @@ def render_sidebar():
                 mime="text/calendar",
                 use_container_width=True,
             )
-        else:
-            st.caption("暂无预订...")
+
+            # Calendar subscription URL
+            st.caption("📡 日历订阅 URL（企业微信可用）")
+            feed_url = "http://localhost:8000/calendar/feed.ics"
+            st.code(feed_url, language=None)
+            st.caption("启动订阅服务: `uvicorn src.api.calendar_feed:app`")
 
         st.divider()
 
@@ -397,11 +478,30 @@ def process_message(prompt: str):
 
                     # Capture booking results for display
                     if tool_name == "book_meeting_room" and isinstance(tool_output, dict):
-                        if tool_output.get("success"):
+                        # Check for success field or room field (fallback)
+                        if tool_output.get("success") or tool_output.get("room"):
+                            room = tool_output.get("room")
+                            date = tool_output.get("date")
+                            time_str = tool_output.get("time")
+                            duration = tool_output.get("duration", 1)
+
+                            # Save to database for cross-process sharing
+                            try:
+                                save_booking_sync(
+                                    room=room or "Unknown",
+                                    date=date or "",
+                                    time=time_str or "09:00",
+                                    duration=duration if isinstance(duration, int) else 1,
+                                )
+                            except Exception as e:
+                                import logging
+                                logging.warning(f"Failed to save booking to db: {e}")
+
+                            # Also update session state for immediate display
                             st.session_state.current_bookings.append({
-                                "room": tool_output.get("room"),
-                                "date": tool_output.get("date"),
-                                "time": tool_output.get("time"),
+                                "room": room,
+                                "date": date,
+                                "time": time_str,
                             })
                             st.toast("📅 会议已预订！")
 

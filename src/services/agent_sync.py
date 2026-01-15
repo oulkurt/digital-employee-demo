@@ -218,18 +218,34 @@ def run_agent_streaming(
 
             elif event_type == "on_tool_end":
                 tool_output = event.get("data", {}).get("output")
-                # Convert Pydantic model to dict for serialization
-                if hasattr(tool_output, "model_dump"):
-                    tool_output = tool_output.model_dump()
-                # Handle ToolMessage wrapper (LangGraph v2 format)
-                elif hasattr(tool_output, "content"):
-                    # ToolMessage contains content as string repr of Pydantic model
-                    # Try to get the actual artifact if available
-                    if hasattr(tool_output, "artifact") and tool_output.artifact:
-                        if hasattr(tool_output.artifact, "model_dump"):
-                            tool_output = tool_output.artifact.model_dump()
+
+                # Handle ToolMessage wrapper first (LangGraph v2 format)
+                if hasattr(tool_output, "artifact"):
+                    artifact = getattr(tool_output, "artifact", None)
+                    if artifact is not None:
+                        if hasattr(artifact, "model_dump"):
+                            tool_output = artifact.model_dump()
+                        elif isinstance(artifact, dict):
+                            tool_output = artifact
                         else:
-                            tool_output = tool_output.artifact
+                            tool_output = {"artifact": str(artifact)}
+                    elif hasattr(tool_output, "content"):
+                        # Parse content string as fallback
+                        content_str = str(tool_output.content)
+                        tool_output = {"raw_content": content_str}
+                        import re
+                        pairs = re.findall(r"(\w+)=['\"]?([^'\"]+)['\"]?", content_str)
+                        for key, value in pairs:
+                            if value.lower() == "true":
+                                tool_output[key] = True
+                            elif value.lower() == "false":
+                                tool_output[key] = False
+                            else:
+                                tool_output[key] = value.strip()
+                # Convert Pydantic model to dict for serialization
+                elif hasattr(tool_output, "model_dump"):
+                    tool_output = tool_output.model_dump()
+
                 yield ("tool_end", {"name": current_tool, "output": tool_output})
 
         # Yield done first so user sees complete response
