@@ -262,8 +262,8 @@ def run_agent_streaming(
                 deduplicate=True,
             )
             for mem in extracted:
-                await save_memory(store, user_id, mem)
-                yield ("memory_saved", {"content": mem.content, "type": mem.type})
+                saved = await save_memory(store, user_id, mem, source_text=message)
+                yield ("memory_saved", saved)  # Return full dict with key
         except Exception as e:
             yield ("memory_extraction_failed", {"reason": str(e)})
 

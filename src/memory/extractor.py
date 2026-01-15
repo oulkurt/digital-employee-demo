@@ -2,7 +2,8 @@
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from langgraph.store.base import BaseStore
 
@@ -13,6 +14,8 @@ class ExtractedMemory:
 
     type: str
     content: str
+    source_text: str | None = None  # Source conversation text
+    created_at: str | None = None   # ISO timestamp
 
 
 # Patterns that indicate user preferences
@@ -102,7 +105,8 @@ async def save_memory(
     store: BaseStore,
     user_id: str,
     memory: ExtractedMemory,
-) -> str:
+    source_text: str | None = None,
+) -> dict:
     """
     Save a memory to the store.
 
@@ -110,23 +114,25 @@ async def save_memory(
         store: The memory store.
         user_id: User identifier.
         memory: The memory to save.
+        source_text: Optional source conversation text (overrides memory.source_text).
 
     Returns:
-        The key of the saved memory.
+        The complete saved memory dict including key.
     """
     namespace = ("user_memories", user_id)
     key = f"learned_{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc).isoformat()
 
-    await store.aput(
-        namespace=namespace,
-        key=key,
-        value={
-            "type": memory.type,
-            "content": memory.content,
-        },
-    )
+    value = {
+        "type": memory.type,
+        "content": memory.content,
+        "source_text": source_text or memory.source_text,
+        "created_at": now,
+        "key": key,
+    }
 
-    return key
+    await store.aput(namespace=namespace, key=key, value=value)
+    return value
 
 
 async def get_learned_memories(store: BaseStore, user_id: str) -> list[dict]:
@@ -138,7 +144,7 @@ async def get_learned_memories(store: BaseStore, user_id: str) -> list[dict]:
         user_id: User identifier.
 
     Returns:
-        List of learned memory items.
+        List of learned memory items with full metadata.
     """
     namespace = ("user_memories", user_id)
 
@@ -149,6 +155,69 @@ async def get_learned_memories(store: BaseStore, user_id: str) -> list[dict]:
     learned = []
     for item in results:
         if not item.key.startswith("preset_"):
-            learned.append(item.value)
+            mem = dict(item.value)
+            # Ensure key is always present (compat with old data)
+            if "key" not in mem:
+                mem["key"] = item.key
+            learned.append(mem)
 
     return learned
+
+
+async def update_memory(
+    store: BaseStore,
+    user_id: str,
+    key: str,
+    new_content: str | None = None,
+    new_type: str | None = None,
+) -> dict | None:
+    """
+    Update an existing memory.
+
+    Args:
+        store: The memory store.
+        user_id: User identifier.
+        key: Memory key to update.
+        new_content: New content (optional).
+        new_type: New type (optional).
+
+    Returns:
+        Updated memory dict, or None if not found.
+    """
+    namespace = ("user_memories", user_id)
+
+    # Get existing
+    item = await store.aget(namespace, key)
+    if item is None:
+        return None
+
+    value = dict(item.value)
+    if new_content is not None:
+        value["content"] = new_content
+    if new_type is not None:
+        value["type"] = new_type
+    value["updated_at"] = datetime.now(timezone.utc).isoformat()
+    value["key"] = key  # ensure key is in value
+
+    await store.aput(namespace=namespace, key=key, value=value)
+    return value
+
+
+async def delete_memory(store: BaseStore, user_id: str, key: str) -> bool:
+    """
+    Delete a memory by key.
+
+    Args:
+        store: The memory store.
+        user_id: User identifier.
+        key: Memory key to delete.
+
+    Returns:
+        True if deleted, False otherwise.
+    """
+    namespace = ("user_memories", user_id)
+    try:
+        await store.adelete(namespace, key)
+        return True
+    except Exception:
+        return False

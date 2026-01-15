@@ -157,6 +157,138 @@ def init_session_state():
             import logging
             logging.warning(f"Failed to load bookings from db: {e}")
 
+    # Memory management dialog state
+    if "editing_memory" not in st.session_state:
+        st.session_state.editing_memory = None
+    if "show_memory_dialog" not in st.session_state:
+        st.session_state.show_memory_dialog = False
+    if "confirm_delete" not in st.session_state:
+        st.session_state.confirm_delete = False
+
+
+# --- Memory Edit Dialog ---
+@st.dialog("记忆编辑", width="large")
+def memory_edit_dialog():
+    """Modal dialog for editing a memory."""
+    mem = st.session_state.get("editing_memory", {})
+    is_new = mem.get("key") is None
+
+    st.subheader("➕ 新增记忆" if is_new else "✏️ 编辑记忆")
+
+    # Type selector
+    mem_types = ["preference", "interest", "terminology", "fact"]
+    type_labels = {
+        "preference": "⭐ 偏好",
+        "interest": "💡 兴趣",
+        "terminology": "📝 术语",
+        "fact": "📋 事实",
+    }
+    current_type = mem.get("type", "preference")
+    selected_type = st.selectbox(
+        "记忆类型",
+        options=mem_types,
+        index=mem_types.index(current_type) if current_type in mem_types else 0,
+        format_func=lambda x: type_labels.get(x, x),
+    )
+
+    # Content editor
+    content = st.text_area(
+        "记忆内容",
+        value=mem.get("content", ""),
+        height=150,
+        placeholder="例如：用户偏好下午开会",
+    )
+
+    # Metadata (read-only, only for existing memories)
+    if not is_new:
+        st.divider()
+        st.caption("📍 记忆来源")
+        source = mem.get("source_text") or "（无记录）"
+        st.info(source)
+
+        created = mem.get("created_at", "")
+        if created:
+            st.caption(f"🕐 创建时间: {created[:19].replace('T', ' ')}")
+
+        updated = mem.get("updated_at", "")
+        if updated:
+            st.caption(f"🔄 更新时间: {updated[:19].replace('T', ' ')}")
+
+    st.divider()
+
+    # Action buttons
+    col1, col2, col3 = st.columns([2, 2, 1])
+
+    with col1:
+        if st.button("💾 保存", type="primary", use_container_width=True):
+            if not content.strip():
+                st.error("内容不能为空")
+                return
+
+            store = connect_store()
+            user_id = st.session_state.get("user_id", "demo_user")
+
+            if is_new:
+                # Create new memory
+                from src.memory.extractor import ExtractedMemory, save_memory
+                new_mem = ExtractedMemory(type=selected_type, content=content.strip())
+                saved = run_async(save_memory(store, user_id, new_mem, source_text="手动添加"))
+                st.session_state.learned_memories.append(saved)
+                st.toast("✅ 记忆已添加")
+            else:
+                # Update existing
+                from src.memory.extractor import update_memory
+                key = mem.get("key")
+                updated = run_async(update_memory(store, user_id, key, content.strip(), selected_type))
+                if updated:
+                    # Update in session state
+                    for i, m in enumerate(st.session_state.learned_memories):
+                        if m.get("key") == key:
+                            st.session_state.learned_memories[i] = updated
+                            break
+                    st.toast("✅ 记忆已更新")
+
+            st.session_state.show_memory_dialog = False
+            st.session_state.editing_memory = None
+            st.rerun()
+
+    with col2:
+        if not is_new:
+            if st.button("🗑️ 删除", type="secondary", use_container_width=True):
+                st.session_state.confirm_delete = True
+                st.rerun()
+
+    with col3:
+        if st.button("取消", use_container_width=True):
+            st.session_state.show_memory_dialog = False
+            st.session_state.editing_memory = None
+            st.session_state.confirm_delete = False
+            st.rerun()
+
+    # Delete confirmation
+    if st.session_state.get("confirm_delete"):
+        st.warning("⚠️ 确定要删除这条记忆吗？此操作不可恢复。")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("确认删除", type="primary"):
+                from src.memory.extractor import delete_memory
+                store = connect_store()
+                user_id = st.session_state.get("user_id", "demo_user")
+                key = mem.get("key")
+                run_async(delete_memory(store, user_id, key))
+                st.session_state.learned_memories = [
+                    m for m in st.session_state.learned_memories if m.get("key") != key
+                ]
+                st.session_state.confirm_delete = False
+                st.session_state.show_memory_dialog = False
+                st.session_state.editing_memory = None
+                st.toast("🗑️ 记忆已删除")
+                st.rerun()
+        with c2:
+            if st.button("取消删除"):
+                st.session_state.confirm_delete = False
+                st.rerun()
+
 
 # --- Sidebar (Memory Panel) ---
 def render_sidebar():
@@ -239,11 +371,32 @@ def render_sidebar():
 
         # Learned memories
         st.subheader("🎓 习得记忆")
+
+        # Add memory button
+        if st.button("➕ 新增记忆", key="add_memory_btn", use_container_width=True):
+            st.session_state.editing_memory = {"key": None, "content": "", "type": "preference"}
+            st.session_state.show_memory_dialog = True
+            st.rerun()
+
         if st.session_state.learned_memories:
-            for mem in st.session_state.learned_memories:
+            for idx, mem in enumerate(st.session_state.learned_memories):
                 content = mem.get("content", "")
                 mem_type = mem.get("type", "preference")
-                st.success(f"⭐ [{mem_type}] {content}")
+                key = mem.get("key", f"mem_{idx}")
+
+                # Truncate for sidebar display
+                display_content = content[:30] + "..." if len(content) > 30 else content
+
+                emoji = {"preference": "⭐", "interest": "💡", "terminology": "📝", "fact": "📋"}.get(mem_type, "⭐")
+
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.success(f"{emoji} {display_content}")
+                with col2:
+                    if st.button("✏️", key=f"edit_{key}_{idx}", help="编辑"):
+                        st.session_state.editing_memory = mem
+                        st.session_state.show_memory_dialog = True
+                        st.rerun()
         else:
             st.caption("暂无习得记忆...")
 
@@ -511,11 +664,8 @@ def process_message(prompt: str):
 
                 elif event_type == "memory_saved":
                     # Add to learned memories and show toast
-                    new_memory = {
-                        "content": data.get("content", ""),
-                        "type": data.get("type", "preference"),
-                    }
-                    st.session_state.learned_memories.append(new_memory)
+                    # data is now a full dict with key, source_text, created_at
+                    st.session_state.learned_memories.append(data)
                     content_preview = data.get("content", "")[:25]
                     st.toast(f"🧠 已记住: {content_preview}...")
 
@@ -548,6 +698,10 @@ def main():
             except Exception as e:
                 st.error(f"初始化失败: {e}")
                 st.stop()
+
+    # Show memory edit dialog if triggered
+    if st.session_state.show_memory_dialog:
+        memory_edit_dialog()
 
     # Render sidebar (memory panel)
     render_sidebar()
