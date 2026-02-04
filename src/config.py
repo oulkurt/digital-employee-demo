@@ -15,20 +15,21 @@ class Settings(BaseSettings):
     )
 
     # Chat LLM
-    # openrouter_api_key: str = "a948c007713c44eabbb2fcaec42e60be.V0rm1tJVTebSI9ws"
-    openrouter_api_key: str = "ms-337f22b1-ecd1-48ec-94ea-04ccde03d486"
-    # openrouter_base_url: str = "https://api.z.ai/api/coding/paas/v4"
-    openrouter_base_url: str = "https://api-inference.modelscope.cn/v1"
-    default_model: str = "ZhipuAI/GLM-4.7"
+    # Use OPENROUTER_API_KEY / OPENROUTER_BASE_URL / DEFAULT_MODEL in `.env`.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    default_model: str = "anthropic/claude-3.5-sonnet"
 
     # Embedding & Reranker
-    siliconflow_api_key: str = "sk-dzawcmfodnzatlywnqxihrqhtzmakicwvrmfbdaqslnrjugj"
+    # Use SILICONFLOW_API_KEY / SILICONFLOW_BASE_URL in `.env`.
+    siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Tavily (Search)
-    tavily_api_key: str = "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"
+    # Use TAVILY_API_KEY in `.env`.
+    tavily_api_key: str = ""
 
     # PostgreSQL
     database_url: str = "postgresql://user:password@localhost:5432/digital_employee"
