@@ -28,5 +28,40 @@ services:
         condition: service_healthy
     command: ["uv", "run", "uvicorn", "src.api.calendar_feed:app", "--host", "0.0.0.0", "--port", "8000"]
 
+  # Chat API for MuseBot integration (optional, use --profile wechat)
+  chat-api:
+    build: .
+    container_name: digital-employee-chat
+    profiles:
+      - wechat
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["uv", "run", "uvicorn", "src.api.chat:app", "--host", "0.0.0.0", "--port", "8080"]
+
+  # MuseBot WeChat gateway (optional, use --profile wechat)
+  musebot:
+    image: yincongcyincong/muse-bot:latest
+    container_name: digital-employee-musebot
+    profiles:
+      - wechat
+    ports:
+      - "36060:36060"
+    environment:
+      COM_WECHAT_TOKEN: ${WECOM_TOKEN}
+      COM_WECHAT_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY}
+      COM_WECHAT_CORP_ID: ${WECOM_CORP_ID}
+      COM_WECHAT_SECRET: ${WECOM_SECRET}
+      COM_WECHAT_AGENT_ID: ${WECOM_AGENT_ID}
+      CUSTOM_URL: http://chat-api:8080/api/chat
+      HTTP_HOST: ":36060"
+    depends_on:
+      - chat-api
+    restart: unless-stopped
+
 volumes:
   pgdata:
