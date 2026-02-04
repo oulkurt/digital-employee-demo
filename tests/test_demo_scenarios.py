@@ -30,15 +30,15 @@ class TestPresetMemories:
     def test_friday_preference_exists(self):
         """Verify Friday meeting preference is preset."""
         preferences = [m for m in PRESET_MEMORIES if m.type == MemoryType.PREFERENCE]
-        assert any("friday" in m.content.lower() for m in preferences)
+        assert any(("周五" in m.content and "下午" in m.content) for m in preferences)
 
     def test_interest_memories_exist(self):
         """Verify interest memories for news scenario."""
         interests = [m for m in PRESET_MEMORIES if m.type == MemoryType.INTEREST]
         assert len(interests) >= 2
         contents = " ".join(m.content.lower() for m in interests)
-        assert "energy" in contents or "vehicle" in contents
-        assert "ai" in contents or "chip" in contents
+        assert ("新能源" in contents) or ("汽车" in contents)
+        assert ("ai" in contents) or ("芯片" in contents)
 
 
 class TestCalendarTool:
@@ -46,20 +46,59 @@ class TestCalendarTool:
 
     def test_book_meeting_room_friday(self):
         """Test booking a meeting room for Friday."""
-        result = book_meeting_room.invoke({
-            "day": "friday",
-            "time_slot": "afternoon",
-        })
+        _, result = book_meeting_room.func(
+            day="friday",
+            time_slot="afternoon",
+            duration_hours=1,
+            room=None,
+        )
         assert result.success is True
         assert result.room is not None
         assert "14:00" in result.time
 
     def test_book_meeting_room_default(self):
         """Test booking with default time slot."""
-        result = book_meeting_room.invoke({
-            "day": "monday",
-        })
+        _, result = book_meeting_room.func(
+            day="monday",
+            time_slot="afternoon",
+            duration_hours=1,
+            room=None,
+        )
         assert result.success is True
+
+    def test_book_meeting_room_evening(self):
+        """Test booking a meeting room for 17:00 via evening slot."""
+        _, result = book_meeting_room.func(
+            day="friday",
+            time_slot="evening",
+            duration_hours=1,
+            room=None,
+        )
+        assert result.success is True
+        assert "17:00" in result.time
+
+    def test_book_meeting_room_custom_time(self):
+        """Test booking with custom start_time (HH:MM)."""
+        _, result = book_meeting_room.func(
+            day="friday",
+            time_slot="afternoon",
+            start_time="17:30",
+            duration_hours=1,
+            room=None,
+        )
+        assert result.success is True
+        assert result.time == "17:30"
+
+    def test_book_meeting_room_invalid_time(self):
+        """Invalid custom start_time should raise."""
+        with pytest.raises(Exception):
+            book_meeting_room.func(
+                day="friday",
+                time_slot="afternoon",
+                start_time="25:00",
+                duration_hours=1,
+                room=None,
+            )
 
     def test_query_meeting_rooms(self):
         """Test querying booked rooms."""
@@ -80,9 +119,9 @@ class TestSystemPrompt:
     def test_build_prompt_without_memories(self):
         """Test prompt building without memories."""
         prompt = build_system_prompt()
-        assert "digital employee" in prompt.lower()
-        assert "meeting" in prompt.lower()
-        assert "memory" in prompt.lower()
+        assert "数字员工" in prompt
+        assert "会议" in prompt
+        assert "记忆" in prompt
 
     def test_build_prompt_with_memories(self):
         """Test prompt building with memories."""
@@ -109,13 +148,13 @@ class TestScenarioA:
         """Verify Friday preference would be in context."""
         # Simulate memory retrieval
         memories = [
-            {"type": "preference", "content": "User prefers Friday afternoon meetings"},
+            {"type": "preference", "content": "用户偏好在周五下午安排会议。"},
         ]
         prompt = build_system_prompt(memories)
 
         # The prompt should contain the Friday preference
-        assert "friday" in prompt.lower()
-        assert "afternoon" in prompt.lower()
+        assert "周五" in prompt
+        assert "下午" in prompt
 
 
 class TestScenarioB:
@@ -129,14 +168,14 @@ class TestScenarioB:
     def test_memory_context_includes_interests(self):
         """Verify interests would be in context."""
         memories = [
-            {"type": "interest", "content": "User follows new energy vehicles"},
-            {"type": "interest", "content": "User follows AI chip developments"},
+            {"type": "interest", "content": "用户关注新能源汽车行业动态。"},
+            {"type": "interest", "content": "用户关注AI芯片技术发展。"},
         ]
         prompt = build_system_prompt(memories)
 
         # The prompt should contain both interests
-        assert "energy" in prompt.lower() or "vehicle" in prompt.lower()
-        assert "ai" in prompt.lower() or "chip" in prompt.lower()
+        assert ("新能源" in prompt) or ("汽车" in prompt)
+        assert ("AI" in prompt) or ("芯片" in prompt)
 
 
 # Integration tests (require database and API keys)

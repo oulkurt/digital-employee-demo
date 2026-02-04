@@ -144,6 +144,9 @@ def init_session_state():
         st.session_state.initialized = False
     if "pending_prompt" not in st.session_state:
         st.session_state.pending_prompt = None
+    if "show_debug_panel" not in st.session_state:
+        # Shows tool calls / RAG / retrieval process (never shows model chain-of-thought)
+        st.session_state.show_debug_panel = False
     # Session history for conversation list
     if "sessions" not in st.session_state:
         st.session_state.sessions = []  # List of {id, title, timestamp}
@@ -355,6 +358,16 @@ def render_sidebar():
 
         st.divider()
 
+        # Display settings
+        st.subheader("⚙️ 显示设置")
+        st.toggle(
+            "显示过程（调试）",
+            key="show_debug_panel",
+            help="展示工具调用、检索到的记忆、RAG 结果等过程信息；不会展示模型 <think>/<analysis> 思考内容。",
+        )
+
+        st.divider()
+
         # Preset memories (built-in)
         st.subheader("📌 内置记忆")
         for memory in PRESET_MEMORIES:
@@ -499,8 +512,26 @@ def render_right_panel():
                             elif "bookings" in output:
                                 # Query result
                                 bookings = output.get("bookings", [])
+                                if isinstance(bookings, str):
+                                    import ast
+                                    import json
+
+                                    raw = bookings.strip()
+                                    parsed = None
+                                    try:
+                                        parsed = json.loads(raw)
+                                    except Exception:
+                                        try:
+                                            parsed = ast.literal_eval(raw)
+                                        except Exception:
+                                            parsed = None
+                                    if isinstance(parsed, list):
+                                        bookings = parsed
                                 if bookings:
                                     for b in bookings:
+                                        if not isinstance(b, dict):
+                                            st.markdown(f"- {str(b)}")
+                                            continue
                                         date_time = f"{b.get('date')} {b.get('time')}"
                                         st.markdown(f"- **{b.get('room')}** @ {date_time}")
                                 else:
@@ -639,23 +670,28 @@ def process_message(prompt: str):
                             duration = tool_output.get("duration", 1)
 
                             # Save to database for cross-process sharing
-                            try:
-                                save_booking_sync(
-                                    room=room or "Unknown",
-                                    date=date or "",
-                                    time=time_str or "09:00",
-                                    duration=duration if isinstance(duration, int) else 1,
-                                )
-                            except Exception as e:
-                                import logging
-                                logging.warning(f"Failed to save booking to db: {e}")
+                            if date:
+                                try:
+                                    save_booking_sync(
+                                        room=room or "Unknown",
+                                        date=date,
+                                        time=time_str or "09:00",
+                                        duration=duration if isinstance(duration, int) else 1,
+                                    )
+                                except Exception as e:
+                                    import logging
+
+                                    logger = logging.getLogger(__name__)
+                                    logger.warning(f"Failed to save booking to db: {e}")
 
                             # Also update session state for immediate display
-                            st.session_state.current_bookings.append({
-                                "room": room,
-                                "date": date,
-                                "time": time_str,
-                            })
+                            st.session_state.current_bookings.append(
+                                {
+                                    "room": room,
+                                    "date": date,
+                                    "time": time_str,
+                                }
+                            )
                             st.toast("📅 会议已预订！")
 
                 elif event_type == "memory_extracting":
@@ -685,6 +721,23 @@ def process_message(prompt: str):
     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 
+def render_chat_column():
+    st.title("🤖 数科数字员工助手")
+    render_chat_area()
+
+    # Handle pending prompt from starter buttons
+    if st.session_state.pending_prompt:
+        prompt = st.session_state.pending_prompt
+        st.session_state.pending_prompt = None
+        process_message(prompt)
+        st.rerun()
+
+    # Chat input
+    if prompt := st.chat_input("请输入您的问题..."):
+        process_message(prompt)
+        st.rerun()
+
+
 def main():
     """Main application entry point."""
     init_session_state()
@@ -706,27 +759,15 @@ def main():
     # Render sidebar (memory panel)
     render_sidebar()
 
-    # Main content area with two columns
-    col_chat, col_panel = st.columns([6, 4])
-
-    with col_chat:
-        st.title("🤖 数科数字员工助手")
-        render_chat_area()
-
-        # Handle pending prompt from starter buttons
-        if st.session_state.pending_prompt:
-            prompt = st.session_state.pending_prompt
-            st.session_state.pending_prompt = None
-            process_message(prompt)
-            st.rerun()
-
-        # Chat input
-        if prompt := st.chat_input("请输入您的问题..."):
-            process_message(prompt)
-            st.rerun()
-
-    with col_panel:
-        render_right_panel()
+    # Main content area (optional debug panel on the right)
+    if st.session_state.show_debug_panel:
+        col_chat, col_panel = st.columns([6, 4])
+        with col_chat:
+            render_chat_column()
+        with col_panel:
+            render_right_panel()
+    else:
+        render_chat_column()
 
 
 if __name__ == "__main__":

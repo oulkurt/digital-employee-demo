@@ -192,7 +192,7 @@ async def extract_memories_with_fallback(
         if memories:
             logger.info(f"LLM extracted {len(memories)} memories")
     except asyncio.TimeoutError:
-        logger.warning("LLM extraction timeout, falling back to regex")
+        logger.info("LLM extraction timeout, falling back to regex")
         memories = extract_memories_from_message(user_message)
     except Exception as e:
         logger.warning(f"LLM extraction failed: {e}, falling back to regex")

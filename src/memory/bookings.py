@@ -2,12 +2,21 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date as Date, datetime
 from typing import AsyncGenerator
 
 import asyncpg
 
 from src.config import get_settings
+
+
+def _coerce_iso_date(value: str | Date) -> Date:
+    if isinstance(value, Date):
+        return value
+    text = str(value).strip()
+    if not text:
+        raise ValueError("date 不能为空（需要 YYYY-MM-DD）")
+    return datetime.strptime(text, "%Y-%m-%d").date()
 
 
 async def _get_conn() -> asyncpg.Connection:
@@ -47,17 +56,18 @@ async def save_booking(
     user_id: str = "demo_user",
 ) -> int:
     """Save a booking to database. Returns booking id."""
+    date_obj = _coerce_iso_date(date)
     conn = await _get_conn()
     try:
         result = await conn.fetchval(
             """
             INSERT INTO bookings (user_id, room, date, time, duration)
-            VALUES ($1, $2, $3::date, $4, $5)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id
             """,
             user_id,
             room,
-            date,
+            date_obj,
             time,
             duration,
         )

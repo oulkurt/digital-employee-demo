@@ -14,6 +14,7 @@ class BookingResult(BaseModel):
     room: str
     date: str
     time: str
+    duration: int = 1
     message: str
 
 
@@ -41,10 +42,49 @@ AVAILABLE_ROOMS = [
 _bookings: list[dict] = []
 
 
+def _normalize_time(value: str) -> str | None:
+    import re
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    # Fast path: HH:MM or HH：MM
+    m = re.match(r"^(\d{1,2})\s*[:：]\s*(\d{1,2})$", raw)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+        return None
+
+    # Chinese / am-pm-ish forms: "下午5点", "晚上5点30", "5点", "5点30"
+    lowered = raw.lower()
+    is_pm = any(k in lowered for k in ["pm", "下午", "晚上"])
+    is_am = any(k in lowered for k in ["am", "上午"])
+
+    m = re.search(r"(\d{1,2})(?:\s*[:：]\s*(\d{1,2}))?\s*(?:点|时)?", raw)
+    if not m:
+        return None
+
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+
+    if is_pm and hour < 12:
+        hour += 12
+    if is_am and hour == 12:
+        hour = 0
+
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return f"{hour:02d}:{minute:02d}"
+    return None
+
+
 @tool(response_format="content_and_artifact")
 def book_meeting_room(
     day: Literal["monday", "tuesday", "wednesday", "thursday", "friday"] | str,
-    time_slot: Literal["morning", "afternoon"] = "afternoon",
+    time_slot: Literal["morning", "afternoon", "evening"] | str = "afternoon",
+    start_time: str | None = None,
     duration_hours: int = 1,
     room: str | None = None,
 ) -> tuple[str, BookingResult]:
@@ -53,7 +93,9 @@ def book_meeting_room(
 
     Args:
         day: Day of the week (e.g., "friday") or a date string.
-        time_slot: "morning" (9:00) or "afternoon" (14:00).
+        time_slot: "morning" (09:00), "afternoon" (14:00), "evening" (17:00),
+            or a custom time like "17:30".
+        start_time: Optional custom time (HH:MM, 24-hour). If provided, overrides time_slot.
         duration_hours: Duration in hours (default 1).
         room: Specific room to book, or None for auto-assignment.
 
@@ -82,7 +124,28 @@ def book_meeting_room(
         target_date = today + timedelta(days=1)
 
     # Determine time
-    start_time = "09:00" if time_slot == "morning" else "14:00"
+    slot_map = {
+        "morning": "09:00",
+        "afternoon": "14:00",
+        "evening": "17:00",
+    }
+
+    if start_time:
+        normalized = _normalize_time(start_time)
+        if not normalized:
+            raise ValueError("start_time 必须是有效的 HH:MM（24小时制），例如 17:00 / 09:30")
+        start_time = normalized
+    else:
+        slot_key = str(time_slot).strip().lower()
+        if slot_key in slot_map:
+            start_time = slot_map[slot_key]
+        else:
+            normalized = _normalize_time(slot_key)
+            if not normalized:
+                raise ValueError(
+                    "time_slot 仅支持 morning/afternoon/evening，或传入 start_time=HH:MM（24小时制）"
+                )
+            start_time = normalized
 
     # Select room
     selected_room = room if room in AVAILABLE_ROOMS else AVAILABLE_ROOMS[0]
@@ -101,9 +164,10 @@ def book_meeting_room(
         room=selected_room,
         date=booking["date"],
         time=start_time,
+        duration=duration_hours,
         message=(
-            f"Successfully booked {selected_room} on {booking['date']} "
-            f"at {start_time} for {duration_hours} hour(s)."
+            f"已成功预订 {selected_room}：{booking['date']} {start_time}，"
+            f"时长 {duration_hours} 小时。"
         ),
     )
     # Return (content_for_llm, artifact_for_code)
